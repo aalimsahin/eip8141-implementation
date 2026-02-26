@@ -1,6 +1,8 @@
 'use client'
 
 import { useState } from 'react'
+import { buildEcdsaFrameTx, sendFrameTransaction } from '../../lib/eip8141'
+import type { Address, Hex } from 'viem'
 
 type SignatureScheme = 'ecdsa' | 'multisig' | 'webauthn'
 
@@ -9,6 +11,8 @@ export default function Playground() {
   const [sender, setSender] = useState('')
   const [target, setTarget] = useState('')
   const [calldata, setCalldata] = useState('')
+  const [privateKey, setPrivateKey] = useState('')
+  const [multisigKeys, setMultisigKeys] = useState('')
   const [txHash, setTxHash] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -20,8 +24,36 @@ export default function Playground() {
     setLoading(true)
 
     try {
-      // TODO: Build and send frame transaction using lib/eip8141.ts
-      setError('Transaction sending not yet implemented. Connect to the devnet first.')
+      if (!sender) throw new Error('Sender address is required')
+      if (!target) throw new Error('Target contract address is required')
+
+      const rpcUrl = process.env.NEXT_PUBLIC_RPC_URL || 'http://localhost:8545'
+
+      if (scheme === 'ecdsa') {
+        if (!privateKey) throw new Error('Private key is required for ECDSA mode')
+
+        // Build an ECDSA-verified frame transaction
+        // The signature is the private key for demo purposes (the devnet verifier
+        // accepts raw key material; a production verifier would use proper ECDSA)
+        const tx = buildEcdsaFrameTx({
+          chainId: 8141n,
+          nonce: 0n,
+          sender: sender as Address,
+          verifierAddress: sender as Address, // demo: sender is also the verifier
+          signature: (privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`) as Hex,
+          target: target as Address,
+          calldata: (calldata || '0x') as Hex,
+          maxFeePerGas: 30_000_000_000n,
+          maxPriorityFeePerGas: 1_000_000_000n,
+        })
+
+        const hash = await sendFrameTransaction(rpcUrl, tx)
+        setTxHash(hash)
+      } else if (scheme === 'multisig') {
+        throw new Error('Multisig submission is not yet supported in the playground')
+      } else if (scheme === 'webauthn') {
+        throw new Error('WebAuthn submission is not yet supported in the playground')
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error')
     } finally {
@@ -97,6 +129,8 @@ export default function Playground() {
             </label>
             <input
               type="password"
+              value={privateKey}
+              onChange={(e) => setPrivateKey(e.target.value)}
               placeholder="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
               className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-sm font-mono focus:outline-none focus:border-blue-500"
             />
@@ -108,6 +142,8 @@ export default function Playground() {
             Multisig mode: Enter multiple private keys (comma-separated) for N-of-M signing.
             <input
               type="text"
+              value={multisigKeys}
+              onChange={(e) => setMultisigKeys(e.target.value)}
               placeholder="0xkey1, 0xkey2, 0xkey3"
               className="w-full mt-2 bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-sm font-mono focus:outline-none focus:border-blue-500"
             />

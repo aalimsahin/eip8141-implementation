@@ -44,18 +44,50 @@ object "WebAuthnVerifier" {
             // Read clientDataJSON bytes
             let clientDataLen := calldataload(clientDataOffset)
 
+            // Compute start of clientDataJSON bytes in calldata
+            let clientDataStart := add(clientDataOffset, 0x20)
+
             // === Get sig_hash via TXPARAMLOAD(0x08, 0) ===
-            // (used as the WebAuthn challenge, verified by the caller off-chain)
-            // We don't directly use sigHash in the P256 verification;
-            // instead it should be embedded in clientDataJSON as the challenge.
-            // The verifier trusts the WebAuthn assertion structure.
+            let sigHash := verbatim_2i_1o(hex"b0", 0x08, 0)
+
+            // === Verify challenge in clientDataJSON matches sig_hash ===
+            // SECURITY: The WebAuthn challenge MUST match the current transaction's
+            // sig_hash to prevent replay attacks across different transactions.
+            //
+            // clientDataJSON contains a base64url-encoded challenge field.
+            // Rather than parsing JSON + base64url in Yul (prohibitively complex),
+            // we require that the raw sig_hash bytes (32 bytes) appear at a known
+            // offset within clientDataJSON. The caller must embed the sig_hash
+            // starting at byte offset 36 of clientDataJSON, which corresponds to
+            // the challenge value position in the standard WebAuthn JSON format:
+            //   {"type":"webauthn.get","challenge":"<base64url(sig_hash)>",...}
+            //
+            // We verify by checking that the 32 bytes at clientDataJSON[36..68]
+            // match sig_hash when the challenge is passed as raw hex (not base64url).
+            // For production use, a proper base64url decoder should be implemented
+            // or the challenge offset should be passed as a parameter.
+
+            // Load 32 bytes from clientDataJSON at offset 36 (challenge position)
+            let challengeOffset := 36
+            // Bounds check: clientDataJSON must be long enough
+            if lt(clientDataLen, add(challengeOffset, 32)) { revert(0, 0) }
+            // Copy the challenge bytes from clientDataJSON to memory
+            calldatacopy(0x180, add(clientDataStart, challengeOffset), 0x20)
+            let embeddedChallenge := mload(0x180)
+            // Verify the embedded challenge matches the transaction sig_hash
+            if iszero(eq(embeddedChallenge, sigHash)) {
+                mstore(0x00, 0x08c379a000000000000000000000000000000000000000000000000000000000)
+                mstore(0x04, 0x20)
+                mstore(0x24, 30)
+                mstore(0x44, "challenge mismatch: replay")
+                revert(0x00, 0x64)
+            }
 
             // === Compute WebAuthn message hash ===
             // message = sha256(authenticatorData || sha256(clientDataJSON))
 
             // Step 1: sha256(clientDataJSON)
             // Copy clientDataJSON to memory at 0x200
-            let clientDataStart := add(clientDataOffset, 0x20)
             calldatacopy(0x200, clientDataStart, clientDataLen)
 
             // Call SHA-256 precompile (address 0x02)

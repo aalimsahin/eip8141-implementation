@@ -10,6 +10,7 @@ services:
       - "8546:8546"
       - "30303:30303"
     volumes:
+      - ./genesis.json:/genesis.json:ro
       - reth-data:/data
     command: >
       node --dev --dev.block-time 2s

@@ -35,6 +35,20 @@ contract WebAuthnVerifier {
             sigHash := verbatim_2i_1o(hex"b0", 0x08, 0)
         }
 
+        // SECURITY: Verify the WebAuthn challenge matches the current transaction's
+        // sig_hash to prevent replay attacks. The challenge (raw sig_hash bytes)
+        // must be embedded at byte offset 36 in clientDataJSON, corresponding to
+        // the challenge value position in the standard WebAuthn JSON format:
+        //   {"type":"webauthn.get","challenge":"<challenge>",...}
+        require(clientDataJSON.length >= 68, "clientDataJSON too short for challenge");
+        bytes32 embeddedChallenge;
+        assembly {
+            // clientDataJSON bytes start at offset 0x20 (skip length prefix)
+            // Challenge is at byte offset 36 within the JSON payload
+            embeddedChallenge := mload(add(add(clientDataJSON, 0x20), 36))
+        }
+        require(embeddedChallenge == sigHash, "challenge mismatch: replay");
+
         // Compute the WebAuthn message hash
         // message = sha256(authenticatorData || sha256(clientDataJSON))
         bytes32 clientDataHash = sha256(clientDataJSON);

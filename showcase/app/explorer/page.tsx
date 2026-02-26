@@ -49,6 +49,7 @@ export default function Explorer() {
 
         const results = await Promise.all(blockPromises)
         setBlocks(results.map((r) => r.result).filter(Boolean))
+        setError(null)
       } catch {
         setError('Cannot connect to devnet at localhost:8545')
       } finally {
