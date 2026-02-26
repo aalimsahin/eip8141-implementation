@@ -1,40 +1,30 @@
 version: "3.8"
 
 services:
-  reth:
-    image: eip8141-reth:latest
+  reth-eip8141:
     build:
       context: ../reth-eip8141
-      dockerfile: Dockerfile
+      dockerfile: ../devnet/Dockerfile
     ports:
       - "8545:8545"
       - "8546:8546"
+      - "30303:30303"
     volumes:
       - reth-data:/data
-      - ./genesis.json:/genesis.json:ro
     command: >
-      node --chain /genesis.json --datadir /data
-      --dev --dev.block-time 2s
+      node --dev --dev.block-time 2s
+      --datadir /data
+      --chain /genesis.json
       --http --http.addr 0.0.0.0 --http.port 8545
-      --http.api eth,net,web3,debug,txpool
+      --http.api "eth,net,web3,txpool,debug,trace"
+      --http.corsdomain "*"
       --ws --ws.addr 0.0.0.0 --ws.port 8546
+      --ws.api "eth,net,web3,txpool"
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8545"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
-  showcase:
-    build: ../showcase
-    ports:
-      - "3000:3000"
-    environment:
-      - NEXT_PUBLIC_RPC_URL=http://reth:8545
-      - NEXT_PUBLIC_WS_URL=ws://reth:8546
-      - NEXT_PUBLIC_CHAIN_ID=8141
-    depends_on:
-      reth:
-        condition: service_healthy
+      test: ["CMD", "curl", "-f", "http://localhost:8545"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 volumes:
   reth-data:
