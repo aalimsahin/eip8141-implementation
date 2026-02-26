@@ -2,65 +2,53 @@
 pragma solidity ^0.8.24;
 
 /// @title WebAuthnVerifier
-/// @notice EIP-8141 VERIFY frame contract for WebAuthn / Passkey (P-256) signature validation.
-/// @dev Uses the P256VERIFY precompile (RIP-7212) at address 0x100 for secp256r1 verification.
-///      This enables biometric authentication (Touch ID, Face ID) for Ethereum transactions.
+/// @notice Verifies WebAuthn/Passkey (P-256) signatures for EIP-8141 frame transactions.
+/// @dev Uses the RIP-7212 P256VERIFY precompile at address 0x100.
+///
+///      COMPILATION NOTE: Uses `verbatim` for custom opcodes (TXPARAMLOAD 0xb0,
+///      APPROVE 0xaa). Compile the Yul version (yul/WebAuthnVerifier.yul) for
+///      deployable bytecode. This Solidity file is a readable reference.
 contract WebAuthnVerifier {
+    /// @notice The P-256 public key X coordinate.
     bytes32 public immutable pubKeyX;
+    /// @notice The P-256 public key Y coordinate.
     bytes32 public immutable pubKeyY;
 
-    /// @dev P256VERIFY precompile address (RIP-7212, active since Pectra)
-    address constant P256_VERIFIER = address(0x0000000000000000000000000000000000000100);
+    /// @notice RIP-7212 P256VERIFY precompile address.
+    address constant P256_VERIFIER = address(0x100);
 
     constructor(bytes32 _pubKeyX, bytes32 _pubKeyY) {
         pubKeyX = _pubKeyX;
         pubKeyY = _pubKeyY;
     }
 
+    /// @notice Verify a WebAuthn P-256 signature.
+    /// @dev Calldata format: abi.encode(bytes32 r, bytes32 s, bytes authenticatorData, bytes clientDataJSON)
+    ///      The sig_hash is used as the challenge in the WebAuthn assertion.
     fallback() external {
-        // Read signature hash via TXPARAMLOAD
+        (bytes32 r, bytes32 s, bytes memory authenticatorData, bytes memory clientDataJSON) =
+            abi.decode(msg.data, (bytes32, bytes32, bytes, bytes));
+
+        // Get the signature hash (used as the WebAuthn challenge)
         bytes32 sigHash;
         assembly {
-            sigHash := verbatim_2i_1o(hex"b0", 0x08, 0x00)
+            sigHash := verbatim_2i_1o(hex"b0", 0x08, 0)
         }
 
-        // Read frame data
-        uint256 dataSize;
-        assembly {
-            let frameIdx := verbatim_2i_1o(hex"b0", 0x10, 0x00)
-            dataSize := verbatim_2i_1o(hex"b1", 0x12, frameIdx)
-        }
-        bytes memory frameData = new bytes(dataSize);
-        assembly {
-            let frameIdx := verbatim_2i_1o(hex"b0", 0x10, 0x00)
-            verbatim_5i_0o(hex"b2", 0x12, frameIdx, add(frameData, 0x20), 0x00, dataSize)
-        }
-
-        // Decode: (bytes32 r, bytes32 s, bytes authenticatorData, bytes clientDataJSON)
-        (bytes32 r, bytes32 s, bytes memory authData, bytes memory clientData) =
-            abi.decode(frameData, (bytes32, bytes32, bytes, bytes));
-
-        // Reconstruct the WebAuthn message:
+        // Compute the WebAuthn message hash
         // message = sha256(authenticatorData || sha256(clientDataJSON))
-        bytes32 clientDataHash = sha256(clientData);
-        bytes32 message = sha256(abi.encodePacked(authData, clientDataHash));
+        bytes32 clientDataHash = sha256(clientDataJSON);
+        bytes32 message = sha256(abi.encodePacked(authenticatorData, clientDataHash));
 
-        // Verify P-256 signature via RIP-7212 precompile
-        // Input: hash (32) || r (32) || s (32) || x (32) || y (32) = 160 bytes
-        // Output: 1 (valid) or 0 (invalid), 32 bytes
-        (bool success, bytes memory result) = P256_VERIFIER.staticcall(
-            abi.encodePacked(message, r, s, pubKeyX, pubKeyY)
-        );
-        require(success && result.length == 32, "WebAuthnVerifier: P256 call failed");
-        uint256 verified;
-        assembly {
-            verified := mload(add(result, 0x20))
-        }
-        require(verified == 1, "WebAuthnVerifier: invalid P-256 signature");
+        // Call P256VERIFY precompile: input = (message_hash, r, s, x, y)
+        bytes memory input = abi.encode(message, r, s, pubKeyX, pubKeyY);
+        (bool success, bytes memory result) = P256_VERIFIER.staticcall(input);
 
-        // APPROVE scope 0x2 (combined approval)
+        require(success && result.length == 32, "P256 verification failed");
+        require(abi.decode(result, (uint256)) == 1, "invalid P256 signature");
+
         assembly {
-            verbatim_3i_0o(hex"aa", 0x00, 0x00, 0x02)
+            verbatim_3i_0o(hex"aa", 0, 0, 0x02)
         }
     }
 }
