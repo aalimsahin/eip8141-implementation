@@ -52,3 +52,27 @@
 - **Simplicity First**: Make every change as simple as possible. Impact minimal code.
 - **No Laziness**: Find root causes. No temporary fixes. Senior developer standards.
 - **Minimal Impact**: Changes should only touch what's necessary. Avoid introducing bugs.
+
+## EIP-8141 Build & Test Commands
+
+```bash
+# Build the EIP-8141 node binary
+cd reth-eip8141
+cargo build -p reth-eip8141
+
+# Run EIP-8141 tests
+cargo test -p reth-eip8141-primitives
+cargo test -p reth-eip8141-evm
+
+# Run the devnet locally
+./devnet/run-devnet.sh
+
+# Dump genesis to verify chain spec
+./target/debug/reth-eip8141 dump-genesis --chain eip8141-dev
+```
+
+## EIP-8141 Architecture
+
+- **revm-eip8141/**: Fork of revm v34.0.0 with EIP-8141 opcodes (APPROVE 0xAA, TXPARAMLOAD 0xB0, TXPARAMSIZE 0xB1, TXPARAMCOPY 0xB2)
+- **reth-eip8141/**: Fork of reth with custom node type, EVM factory, and pool builder for type 0x06 transactions
+- Key integration: `FrameTxContext` as revm Context chain parameter, blanket `FrameTxHost` impl, `Eip8141EvmFactory` in reth
