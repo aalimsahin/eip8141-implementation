@@ -38,15 +38,6 @@
 - Zero context switching required from the user
 - Go fix failing CI tests without being told how
 
-## Task Management
-
-1. **Plan First**: Write plan to `tasks/todo.md` with checkable items
-2. **Verify Plan**: Check in before starting implementation
-3. **Track Progress**: Mark items complete as you go
-4. **Explain Changes**: High-level summary at each step
-5. **Document Results**: Add review section to `tasks/todo.md`
-6. **Capture Lessons**: Update `tasks/lessons.md` after corrections
-
 ## Core Principles
 
 - **Simplicity First**: Make every change as simple as possible. Impact minimal code.
@@ -56,23 +47,34 @@
 ## EIP-8141 Build & Test Commands
 
 ```bash
-# Build the EIP-8141 node binary
-cd reth-eip8141
-cargo build -p reth-eip8141
+# Build the anvil fork
+cd foundry
+cargo build -p anvil
 
-# Run EIP-8141 tests
-cargo test -p reth-eip8141-primitives
-cargo test -p reth-eip8141-evm
+# Run EIP-8141 transaction type tests
+cargo test -p foundry-primitives
 
-# Run the devnet locally
-./devnet/run-devnet.sh
-
-# Dump genesis to verify chain spec
-./target/debug/reth-eip8141 dump-genesis --chain eip8141-dev
+# Run the E2E demo (start anvil first in another terminal)
+python3 devnet/anvil_demo.py
 ```
 
 ## EIP-8141 Architecture
 
 - **revm-eip8141/**: Fork of revm v34.0.0 with EIP-8141 opcodes (APPROVE 0xAA, TXPARAMLOAD 0xB0, TXPARAMSIZE 0xB1, TXPARAMCOPY 0xB2)
-- **reth-eip8141/**: Fork of reth with custom node type, EVM factory, and pool builder for type 0x06 transactions
-- Key integration: `FrameTxContext` as revm Context chain parameter, blanket `FrameTxHost` impl, `Eip8141EvmFactory` in reth
+- **foundry/**: Fork of Foundry with anvil support for type 0x06 frame transactions
+- Key integration: `FrameTxContext` as revm Context chain parameter, `execute_eip8141_frame_tx()` in anvil executor
+
+## File Structure
+
+```
+eip8141-implementation/
+├── revm-eip8141/       # revm fork (submodule)
+├── foundry/            # Foundry/anvil fork (submodule)
+│   ├── crates/primitives/src/transaction/eip8141.rs  # TxEip8141 type + validation
+│   ├── crates/anvil/src/eth/backend/eip8141.rs       # Frame execution engine
+│   └── crates/anvil/src/eth/backend/executor.rs      # Integration point
+└── devnet/
+    ├── anvil_demo.py               # E2E demo
+    ├── passkey_demo.py             # P256 passkey demo
+    └── simple_p256_verifier.yul    # P256 verifier in Yul
+```

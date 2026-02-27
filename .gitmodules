@@ -1,6 +1,7 @@
 [submodule "revm-eip8141"]
 	path = revm-eip8141
 	url = https://github.com/aalimsahin/revm-eip8141.git
-[submodule "reth-eip8141"]
-	path = reth-eip8141
-	url = https://github.com/aalimsahin/reth-eip8141.git
+[submodule "foundry"]
+	path = foundry
+	url = https://github.com/aalimsahin/foundry-eip8141.git
+	branch = eip8141
