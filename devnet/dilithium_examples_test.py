@@ -25,6 +25,14 @@ import rlp
 from web3 import Web3
 from eth_abi import encode as abi_encode
 
+from erc20_helpers import (
+    build_sponsor_policy_verifier_runtime,
+    erc20_deploy_data,
+    erc20_sponsor_policy_data,
+    erc20_transfer_calldata,
+    query_erc20_balance,
+)
+
 # Add ethdilithium pythonref to path for dilithium_py imports
 _PYTHONREF = os.path.join(os.path.dirname(__file__), "..", "ethdilithium", "pythonref")
 if _PYTHONREF not in sys.path:
@@ -523,39 +531,10 @@ def main():
     verifier_bytes = bytes.fromhex(verifier[2:])
     pk_contract_bytes = bytes.fromhex(pk_contract[2:])
 
-    # ── Generate sponsor Dilithium keypair ──────────────────────────────
-    print("Generating sponsor Dilithium keypair...")
-    sponsor_pk, sponsor_sk, sponsor_seed = generate_dilithium_keypair()
-    print(f"  Sponsor seed: {sponsor_seed.hex()}")
-    print(f"  Sponsor PK len: {len(sponsor_pk)} bytes")
-
-    # Deploy sponsor's PKContract via setKey
-    print("Expanding sponsor public key and deploying PKContract via setKey...")
-    sponsor_expanded_pk = expand_pk_for_deployment(sponsor_pk)
-    sponsor_setkey_calldata = SETKEY_SELECTOR + abi_encode(["bytes"], [sponsor_expanded_pk])
-    tx_hash = w3.eth.send_transaction({
-        "from": funder,
-        "to": verifier,
-        "data": sponsor_setkey_calldata,
-        "gas": 10_000_000,
-    })
-    receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
-    expect(int(receipt["status"]) == 1, f"sponsor setKey failed: {receipt}")
-    print(f"  Sponsor setKey gas: {int(receipt['gasUsed'])}")
-
-    # Predict sponsor PKContract address: second CREATE from verifier (nonce=2)
-    sponsor_pk_contract = compute_create_address(verifier, 2)
-    sponsor_pk_code = w3.eth.get_code(sponsor_pk_contract)
-    expect(len(sponsor_pk_code) > 0, f"Sponsor PKContract not found at {sponsor_pk_contract}")
-    sponsor_pk_contract_bytes = bytes.fromhex(sponsor_pk_contract[2:])
-    print(f"  Sponsor PKContract: {sponsor_pk_contract}")
-    print()
-
-    # ── Deploy DilithiumApprovers ───────────────────────────────────────
+    # ── Deploy Dilithium approvers ──────────────────────────────────────
     # scope 0x2 for Examples 1 / 1a / 1b
     # scope 0x0 for Example 2 frame 0 (execution-only, sender's key)
-    # scope 0x1 for Example 2 frame 1 (payment-only, sponsor's key)
-    print("Deploying DilithiumApprovers...")
+    print("Deploying Dilithium approvers...")
     approver_scope2 = deploy_contract(
         w3, funder,
         mk_init_code(build_dilithium_approver_runtime(verifier_bytes, pk_contract_bytes, 2)),
@@ -564,32 +543,32 @@ def main():
         w3, funder,
         mk_init_code(build_dilithium_approver_runtime(verifier_bytes, pk_contract_bytes, 0)),
     )
-    # Sponsor approver: cryptographic Dilithium verification with scope 0x1 (payment)
-    sponsor_approver = deploy_contract(
-        w3, funder,
-        mk_init_code(build_dilithium_approver_runtime(verifier_bytes, sponsor_pk_contract_bytes, 1)),
-    )
+    # Sponsor policy verifier: validates frame[2] ERC20 fee transfer and calls APPROVE(0x1).
+    sponsor_verify = deploy_contract(w3, funder, mk_init_code(build_sponsor_policy_verifier_runtime()))
     print(f"  Approver scope2: {approver_scope2}")
     print(f"  Approver scope0: {approver_scope0}")
-    print(f"  Sponsor approver (scope1): {sponsor_approver}")
+    print(f"  Sponsor verifier (scope1 policy): {sponsor_verify}")
 
     # ── Deploy targets ──────────────────────────────────────────────────
     target_ex1 = deploy_contract(w3, funder, mk_init_code(sstore_runtime(42)))
-    fee_target = deploy_contract(w3, funder, mk_init_code(sstore_runtime(0x11)))
-    call_target = deploy_contract(w3, funder, mk_init_code(sstore_runtime(0x22)))
     postop_target = deploy_contract(w3, funder, mk_init_code(sstore_runtime(0x33)))
     increment_target = deploy_contract(w3, funder, mk_init_code(sstore_increment_runtime()))
 
+    # Deploy ERC20 token for Example 2 (minted to sender_eoa).
+    INITIAL_SUPPLY = 1_000_000 * 10**18
+    FEE_AMOUNT = 100 * 10**18
+    TRANSFER_AMOUNT = 50 * 10**18
+    token = deploy_contract(w3, funder, erc20_deploy_data(sender_eoa, INITIAL_SUPPLY), gas=2_000_000)
+
     print(f"  Target ex1: {target_ex1}")
-    print(f"  Fee target: {fee_target}")
-    print(f"  Call target: {call_target}")
+    print(f"  ERC20 token: {token}")
     print(f"  Post-op target: {postop_target}")
     print(f"  Increment target: {increment_target}")
     print()
 
     # ── Fund accounts ───────────────────────────────────────────────────
-    # Fund sponsor approver contract (scope=0x1 target) — it pays gas when approved.
-    set_balance(w3, sponsor_approver, w3.to_wei(5, "ether"))
+    # Fund sponsor verifier contract (scope=0x1 target) — it pays gas when approved.
+    set_balance(w3, sponsor_verify, w3.to_wei(5, "ether"))
 
     # Fund Dilithium sender EOA.
     set_balance(w3, sender_eoa, w3.to_wei(10, "ether"))
@@ -721,41 +700,55 @@ def main():
     # ════════════════════════════════════════════════════════════════════
     # Example 2: Sponsored-style multi-frame transaction
     # ════════════════════════════════════════════════════════════════════
-    print("Example 2: Sponsored-style multi-frame flow")
+    print("Example 2: Sponsored-style multi-frame flow (real ERC20 transfers)")
     sender_before = w3.eth.get_balance(sender_eoa)
-    sponsor_before = w3.eth.get_balance(sponsor_approver)
+    sponsor_before = w3.eth.get_balance(sponsor_verify)
+    sponsor_addr = sponsor_verify  # sponsor receives fee tokens and pays gas
     increment_before = int.from_bytes(w3.eth.get_storage_at(increment_target, 0), "big")
     expect(increment_before == 0, f"example2: increment target initial slot should be 0, got {increment_before}")
+    token_bytes = bytes.fromhex(token[2:])
+    fee_calldata = erc20_transfer_calldata(sponsor_addr, FEE_AMOUNT)
+    transfer_calldata = erc20_transfer_calldata(recipient, TRANSFER_AMOUNT)
+    sponsor_policy_data = erc20_sponsor_policy_data(token, FEE_AMOUNT)
     frames = [
         # Frame 0: Dilithium VERIFY approves execution only (scope 0x0) — sender's key
         encode_frame(FRAME_MODE_VERIFY, bytes.fromhex(approver_scope0[2:]), verify_gas_limit, b""),
-        # Frame 1: Sponsor VERIFY approves payment (scope 0x1) — sponsor's key (cryptographic)
-        encode_frame(FRAME_MODE_VERIFY, bytes.fromhex(sponsor_approver[2:]), verify_gas_limit, b""),
-        # Frame 2: Payment action
-        encode_frame(FRAME_MODE_SENDER, bytes.fromhex(fee_target[2:]), 100_000, b""),
-        # Frame 3: User action
-        encode_frame(FRAME_MODE_SENDER, bytes.fromhex(call_target[2:]), 100_000, b""),
-        # Frame 4: Sponsor post-op action
+        # Frame 1: Sponsor VERIFY enforces policy (frame[2] must pay ERC20 fee to sponsor).
+        encode_frame(FRAME_MODE_VERIFY, bytes.fromhex(sponsor_verify[2:]), 250_000, sponsor_policy_data),
+        # Frame 2: Fee payment — sender transfers ERC20 tokens to sponsor
+        encode_frame(FRAME_MODE_SENDER, token_bytes, 200_000, fee_calldata),
+        # Frame 3: User action — sender transfers ERC20 tokens to recipient
+        encode_frame(FRAME_MODE_SENDER, token_bytes, 200_000, transfer_calldata),
+        # Frame 4: Sponsor post-op action (DEFAULT, msg.sender=ENTRY_POINT)
         encode_frame(FRAME_MODE_DEFAULT, bytes.fromhex(postop_target[2:]), 100_000, b""),
         # Frames 5-7: extra multi-frame increments (slot0 += 1 each)
         encode_frame(FRAME_MODE_SENDER, bytes.fromhex(increment_target[2:]), 100_000, b""),
         encode_frame(FRAME_MODE_SENDER, bytes.fromhex(increment_target[2:]), 100_000, b""),
         encode_frame(FRAME_MODE_SENDER, bytes.fromhex(increment_target[2:]), 100_000, b""),
     ]
-    tx_hash, receipt, _ = send_signed_frame_tx(
-        w3, chain_id, sender_eoa, sk, frames, "example2",
-        extra_verify_sks={1: sponsor_sk},  # Frame 1 signed with sponsor's key
-    )
+    tx_hash, receipt, _ = send_signed_frame_tx(w3, chain_id, sender_eoa, sk, frames, "example2")
     sender_after = w3.eth.get_balance(sender_eoa)
-    sponsor_after = w3.eth.get_balance(sponsor_approver)
+    sponsor_after = w3.eth.get_balance(sponsor_verify)
     expect(int(receipt["status"]) == 1, "example2: expected status=1")
 
-    fee_slot = int.from_bytes(w3.eth.get_storage_at(fee_target, 0), "big")
-    call_slot = int.from_bytes(w3.eth.get_storage_at(call_target, 0), "big")
+    # Verify ERC20 balances after transfers
+    sender_bal = query_erc20_balance(w3, token, sender_eoa)
+    sponsor_bal = query_erc20_balance(w3, token, sponsor_addr)
+    recipient_bal = query_erc20_balance(w3, token, recipient)
+    expect(
+        sender_bal == INITIAL_SUPPLY - FEE_AMOUNT - TRANSFER_AMOUNT,
+        f"example2: sender token balance mismatch, got {sender_bal}, expected {INITIAL_SUPPLY - FEE_AMOUNT - TRANSFER_AMOUNT}",
+    )
+    expect(
+        sponsor_bal == FEE_AMOUNT,
+        f"example2: sponsor token balance mismatch, got {sponsor_bal}, expected {FEE_AMOUNT}",
+    )
+    expect(
+        recipient_bal == TRANSFER_AMOUNT,
+        f"example2: recipient token balance mismatch, got {recipient_bal}, expected {TRANSFER_AMOUNT}",
+    )
     postop_slot = int.from_bytes(w3.eth.get_storage_at(postop_target, 0), "big")
     increment_slot = int.from_bytes(w3.eth.get_storage_at(increment_target, 0), "big")
-    expect(fee_slot == 0x11, f"example2: fee target slot mismatch {fee_slot}")
-    expect(call_slot == 0x22, f"example2: call target slot mismatch {call_slot}")
     expect(postop_slot == 0x33, f"example2: post-op target slot mismatch {postop_slot}")
     expect(
         increment_slot == 3,
@@ -767,8 +760,37 @@ def main():
     )
     assert_sender_cost(w3, receipt, sponsor_before, sponsor_after, "example2-payer")
     print(
-        f"  PASS tx={tx_hash.hex()} slots fee/call/post/inc={fee_slot:#x}/{call_slot:#x}/{postop_slot:#x}/{increment_slot:#x}"
+        f"  PASS tx={tx_hash.hex()} ERC20: sender={sender_bal/10**18:.0f} sponsor={sponsor_bal/10**18:.0f} recipient={recipient_bal/10**18:.0f}"
     )
+    print(f"  PASS postop_slot={postop_slot:#x} increment_slot={increment_slot}")
+    print("  Running sponsor policy negative check (fee mismatch must revert)...")
+    bad_frames = [
+        encode_frame(FRAME_MODE_VERIFY, bytes.fromhex(approver_scope0[2:]), verify_gas_limit, b""),
+        encode_frame(FRAME_MODE_VERIFY, bytes.fromhex(sponsor_verify[2:]), 250_000, sponsor_policy_data),
+        # Wrong fee amount (policy expects FEE_AMOUNT)
+        encode_frame(FRAME_MODE_SENDER, token_bytes, 200_000, erc20_transfer_calldata(sponsor_addr, FEE_AMOUNT - 1)),
+        encode_frame(FRAME_MODE_SENDER, token_bytes, 200_000, transfer_calldata),
+    ]
+    sender_bal_before_bad = query_erc20_balance(w3, token, sender_eoa)
+    sponsor_bal_before_bad = query_erc20_balance(w3, token, sponsor_addr)
+    recipient_bal_before_bad = query_erc20_balance(w3, token, recipient)
+    _, bad_receipt, _ = send_signed_frame_tx(
+        w3, chain_id, sender_eoa, sk, bad_frames, "example2-policy-negative"
+    )
+    expect(int(bad_receipt["status"]) == 0, "example2-policy-negative: expected status=0")
+    expect(
+        query_erc20_balance(w3, token, sender_eoa) == sender_bal_before_bad,
+        "example2-policy-negative: sender token balance should remain unchanged",
+    )
+    expect(
+        query_erc20_balance(w3, token, sponsor_addr) == sponsor_bal_before_bad,
+        "example2-policy-negative: sponsor token balance should remain unchanged",
+    )
+    expect(
+        query_erc20_balance(w3, token, recipient) == recipient_bal_before_bad,
+        "example2-policy-negative: recipient token balance should remain unchanged",
+    )
+    print("  PASS policy mismatch reverted and ERC20 balances unchanged")
     print()
 
     print("All EIP-8141 Dilithium example checks passed.")

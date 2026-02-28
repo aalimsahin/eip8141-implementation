@@ -25,6 +25,14 @@ import rlp
 from eth_keys import keys
 from web3 import Web3
 
+from erc20_helpers import (
+    build_sponsor_policy_verifier_runtime,
+    erc20_deploy_data,
+    erc20_sponsor_policy_data,
+    erc20_transfer_calldata,
+    query_erc20_balance,
+)
+
 
 # ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -360,25 +368,24 @@ def main():
         funder,
         mk_init_code(build_ecdsa_verifier_runtime(signer_addr, 0)),
     )
-    sponsor_verify = deploy_contract(
-        w3,
-        funder,
-        mk_init_code(bytes([0x60, 0x01, 0x60, 0x00, 0x60, 0x00, 0xAA])),
-    )
+    sponsor_verify = deploy_contract(w3, funder, mk_init_code(build_sponsor_policy_verifier_runtime()))
 
     # Deploy targets.
     target_ex1 = deploy_contract(w3, funder, mk_init_code(sstore_runtime(42)))
-    fee_target = deploy_contract(w3, funder, mk_init_code(sstore_runtime(0x11)))
-    call_target = deploy_contract(w3, funder, mk_init_code(sstore_runtime(0x22)))
     postop_target = deploy_contract(w3, funder, mk_init_code(sstore_runtime(0x33)))
     increment_target = deploy_contract(w3, funder, mk_init_code(sstore_increment_runtime()))
+
+    # Deploy ERC20 token for Example 2 (minted to sender_eoa).
+    INITIAL_SUPPLY = 1_000_000 * 10**18
+    FEE_AMOUNT = 100 * 10**18
+    TRANSFER_AMOUNT = 50 * 10**18
+    token = deploy_contract(w3, funder, erc20_deploy_data(sender_eoa, INITIAL_SUPPLY), gas=2_000_000)
 
     print(f"Verifier scope2: {verifier_scope2}")
     print(f"Verifier scope0: {verifier_scope0}")
     print(f"Sponsor verifier (scope1): {sponsor_verify}")
     print(f"Target ex1: {target_ex1}")
-    print(f"Fee target: {fee_target}")
-    print(f"Call target: {call_target}")
+    print(f"ERC20 token: {token}")
     print(f"Post-op target: {postop_target}")
     print(f"Increment target: {increment_target}")
     print()
@@ -489,17 +496,27 @@ def main():
     print()
 
     # ── Example 2: Sponsored-style multi-frame transaction ───────────────
-    print("Example 2: Sponsored-style multi-frame flow")
+    print("Example 2: Sponsored-style multi-frame flow (real ERC20 transfers)")
     sender_before = w3.eth.get_balance(sender_eoa)
     sponsor_before = w3.eth.get_balance(sponsor_verify)
+    sponsor_addr = sponsor_verify  # sponsor receives fee tokens and pays gas
     increment_before = int.from_bytes(w3.eth.get_storage_at(increment_target, 0), "big")
     expect(increment_before == 0, f"example2: increment target initial slot should be 0, got {increment_before}")
+    token_bytes = bytes.fromhex(token[2:])
+    fee_calldata = erc20_transfer_calldata(sponsor_addr, FEE_AMOUNT)
+    transfer_calldata = erc20_transfer_calldata(recipient, TRANSFER_AMOUNT)
+    sponsor_policy_data = erc20_sponsor_policy_data(token, FEE_AMOUNT)
     frames = [
         encode_frame(FRAME_MODE_VERIFY, bytes.fromhex(verifier_scope0[2:]), 220_000, b""),
-        encode_frame(FRAME_MODE_VERIFY, bytes.fromhex(sponsor_verify[2:]), 80_000, b""),
-        encode_frame(FRAME_MODE_SENDER, bytes.fromhex(fee_target[2:]), 100_000, b""),
-        encode_frame(FRAME_MODE_SENDER, bytes.fromhex(call_target[2:]), 100_000, b""),
+        # Frame 1 carries sponsor policy data and enforces next-frame ERC20 fee payment.
+        encode_frame(FRAME_MODE_VERIFY, bytes.fromhex(sponsor_verify[2:]), 250_000, sponsor_policy_data),
+        # Frame 2: Fee payment — sender transfers ERC20 tokens to sponsor
+        encode_frame(FRAME_MODE_SENDER, token_bytes, 200_000, fee_calldata),
+        # Frame 3: User action — sender transfers ERC20 tokens to recipient
+        encode_frame(FRAME_MODE_SENDER, token_bytes, 200_000, transfer_calldata),
+        # Frame 4: Sponsor post-op action (DEFAULT, msg.sender=ENTRY_POINT)
         encode_frame(FRAME_MODE_DEFAULT, bytes.fromhex(postop_target[2:]), 100_000, b""),
+        # Frames 5-7: extra multi-frame increments
         encode_frame(FRAME_MODE_SENDER, bytes.fromhex(increment_target[2:]), 100_000, b""),
         encode_frame(FRAME_MODE_SENDER, bytes.fromhex(increment_target[2:]), 100_000, b""),
         encode_frame(FRAME_MODE_SENDER, bytes.fromhex(increment_target[2:]), 100_000, b""),
@@ -511,12 +528,24 @@ def main():
     sponsor_after = w3.eth.get_balance(sponsor_verify)
     expect(int(receipt["status"]) == 1, "example2: expected status=1")
 
-    fee_slot = int.from_bytes(w3.eth.get_storage_at(fee_target, 0), "big")
-    call_slot = int.from_bytes(w3.eth.get_storage_at(call_target, 0), "big")
+    # Verify ERC20 balances after transfers
+    sender_bal = query_erc20_balance(w3, token, sender_eoa)
+    sponsor_bal = query_erc20_balance(w3, token, sponsor_addr)
+    recipient_bal = query_erc20_balance(w3, token, recipient)
+    expect(
+        sender_bal == INITIAL_SUPPLY - FEE_AMOUNT - TRANSFER_AMOUNT,
+        f"example2: sender token balance mismatch, got {sender_bal}, expected {INITIAL_SUPPLY - FEE_AMOUNT - TRANSFER_AMOUNT}",
+    )
+    expect(
+        sponsor_bal == FEE_AMOUNT,
+        f"example2: sponsor token balance mismatch, got {sponsor_bal}, expected {FEE_AMOUNT}",
+    )
+    expect(
+        recipient_bal == TRANSFER_AMOUNT,
+        f"example2: recipient token balance mismatch, got {recipient_bal}, expected {TRANSFER_AMOUNT}",
+    )
     postop_slot = int.from_bytes(w3.eth.get_storage_at(postop_target, 0), "big")
     increment_slot = int.from_bytes(w3.eth.get_storage_at(increment_target, 0), "big")
-    expect(fee_slot == 0x11, f"example2: fee target slot mismatch {fee_slot}")
-    expect(call_slot == 0x22, f"example2: call target slot mismatch {call_slot}")
     expect(postop_slot == 0x33, f"example2: post-op target slot mismatch {postop_slot}")
     expect(
         increment_slot == 3,
@@ -528,8 +557,37 @@ def main():
     )
     assert_sender_cost(w3, receipt, sponsor_before, sponsor_after, "example2-payer")
     print(
-        f"  PASS tx={tx_hash.hex()} slots fee/call/post/inc={fee_slot:#x}/{call_slot:#x}/{postop_slot:#x}/{increment_slot:#x}"
+        f"  PASS tx={tx_hash.hex()} ERC20: sender={sender_bal/10**18:.0f} sponsor={sponsor_bal/10**18:.0f} recipient={recipient_bal/10**18:.0f}"
     )
+    print(f"  PASS postop_slot={postop_slot:#x} increment_slot={increment_slot}")
+    print("  Running sponsor policy negative check (fee mismatch must revert)...")
+    bad_frames = [
+        encode_frame(FRAME_MODE_VERIFY, bytes.fromhex(verifier_scope0[2:]), 220_000, b""),
+        encode_frame(FRAME_MODE_VERIFY, bytes.fromhex(sponsor_verify[2:]), 250_000, sponsor_policy_data),
+        # Wrong fee amount (policy expects FEE_AMOUNT)
+        encode_frame(FRAME_MODE_SENDER, token_bytes, 200_000, erc20_transfer_calldata(sponsor_addr, FEE_AMOUNT - 1)),
+        encode_frame(FRAME_MODE_SENDER, token_bytes, 200_000, transfer_calldata),
+    ]
+    sender_bal_before_bad = query_erc20_balance(w3, token, sender_eoa)
+    sponsor_bal_before_bad = query_erc20_balance(w3, token, sponsor_addr)
+    recipient_bal_before_bad = query_erc20_balance(w3, token, recipient)
+    _, bad_receipt, _ = send_signed_frame_tx(
+        w3, chain_id, sender_eoa, signer_private_key, bad_frames, "example2-policy-negative"
+    )
+    expect(int(bad_receipt["status"]) == 0, "example2-policy-negative: expected status=0")
+    expect(
+        query_erc20_balance(w3, token, sender_eoa) == sender_bal_before_bad,
+        "example2-policy-negative: sender token balance should remain unchanged",
+    )
+    expect(
+        query_erc20_balance(w3, token, sponsor_addr) == sponsor_bal_before_bad,
+        "example2-policy-negative: sponsor token balance should remain unchanged",
+    )
+    expect(
+        query_erc20_balance(w3, token, recipient) == recipient_bal_before_bad,
+        "example2-policy-negative: recipient token balance should remain unchanged",
+    )
+    print("  PASS policy mismatch reverted and ERC20 balances unchanged")
     print()
 
     print("All EIP-8141 ECDSA example checks passed.")
