@@ -1,5 +1,48 @@
 # CLAUDE.md
 
+## Project Overview
+
+EIP-8141 frame transaction implementation for Ethereum. Introduces type `0x06` transactions that replace ECDSA signatures with composable execution frames (VERIFY, DEFAULT, SENDER modes) and four new opcodes (APPROVE, TXPARAMLOAD, TXPARAMSIZE, TXPARAMCOPY).
+
+## Repository Structure
+
+```
+eip8141-implementation/
+├── revm-eip8141/       # revm v34.0.0 fork with EIP-8141 opcodes (submodule)
+├── foundry/            # Foundry/anvil fork with type 0x06 support (submodule, branch: eip8141)
+│   ├── crates/primitives/src/transaction/eip8141.rs  # TxEip8141 type + validation
+│   ├── crates/anvil/src/eth/backend/eip8141.rs       # Frame execution engine
+│   └── crates/anvil/src/eth/backend/executor.rs      # Detection + dispatch
+└── devnet/
+    ├── anvil_demo.py               # E2E demo
+    ├── passkey_demo.py             # P256 passkey demo
+    └── simple_p256_verifier.yul    # P256 verifier in Yul
+```
+
+## Build & Test
+
+```bash
+# Build anvil (from repo root)
+cd foundry && cargo build -p anvil
+
+# Run transaction type unit tests (39 tests)
+cargo test -p foundry-primitives
+
+# Run E2E demo (start anvil in another terminal first)
+cd .. && python3 devnet/anvil_demo.py
+```
+
+## Working with Submodules
+
+```bash
+# After cloning, initialize submodules
+git submodule update --init --recursive
+
+# Changes to foundry/ or revm-eip8141/ must be committed inside the submodule first,
+# then the parent repo's submodule reference must be updated with `git add <submodule>`.
+```
+
+
 ## Workflow Orchestration
 
 ### 1. Plan Mode Default
@@ -15,10 +58,9 @@
 - One task per subagent for focused execution
 
 ### 3. Self-Improvement Loop
-- After ANY correction from the user: update `tasks/lessons.md` with the pattern
+- After ANY correction from the user: update memory files with the pattern
 - Write rules for yourself that prevent the same mistake
 - Ruthlessly iterate on these lessons until mistake rate drops
-- Review lessons at session start for relevant project
 
 ### 4. Verification Before Done
 - Never mark a task complete without proving it works
@@ -38,43 +80,7 @@
 - Zero context switching required from the user
 - Go fix failing CI tests without being told how
 
-## Core Principles
-
+### 7. Core Principles
 - **Simplicity First**: Make every change as simple as possible. Impact minimal code.
 - **No Laziness**: Find root causes. No temporary fixes. Senior developer standards.
 - **Minimal Impact**: Changes should only touch what's necessary. Avoid introducing bugs.
-
-## EIP-8141 Build & Test Commands
-
-```bash
-# Build the anvil fork
-cd foundry
-cargo build -p anvil
-
-# Run EIP-8141 transaction type tests
-cargo test -p foundry-primitives
-
-# Run the E2E demo (start anvil first in another terminal)
-python3 devnet/anvil_demo.py
-```
-
-## EIP-8141 Architecture
-
-- **revm-eip8141/**: Fork of revm v34.0.0 with EIP-8141 opcodes (APPROVE 0xAA, TXPARAMLOAD 0xB0, TXPARAMSIZE 0xB1, TXPARAMCOPY 0xB2)
-- **foundry/**: Fork of Foundry with anvil support for type 0x06 frame transactions
-- Key integration: `FrameTxContext` as revm Context chain parameter, `execute_eip8141_frame_tx()` in anvil executor
-
-## File Structure
-
-```
-eip8141-implementation/
-├── revm-eip8141/       # revm fork (submodule)
-├── foundry/            # Foundry/anvil fork (submodule)
-│   ├── crates/primitives/src/transaction/eip8141.rs  # TxEip8141 type + validation
-│   ├── crates/anvil/src/eth/backend/eip8141.rs       # Frame execution engine
-│   └── crates/anvil/src/eth/backend/executor.rs      # Integration point
-└── devnet/
-    ├── anvil_demo.py               # E2E demo
-    ├── passkey_demo.py             # P256 passkey demo
-    └── simple_p256_verifier.yul    # P256 verifier in Yul
-```
