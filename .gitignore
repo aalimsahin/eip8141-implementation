@@ -5,6 +5,6 @@ target/
 node_modules/
 *.log
 
-# devnet/contracts forge build artifacts (out/ is committed for the artifact)
-devnet/contracts/cache/
-devnet/contracts/lib/
+# e2e/contracts forge build artifacts (out/ is committed for the artifact)
+e2e/contracts/cache/
+e2e/contracts/lib/

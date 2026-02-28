@@ -9,9 +9,9 @@ import os
 
 from web3 import Web3
 
-_ARTIFACT_PATH = os.path.join(
-    os.path.dirname(__file__), "contracts", "out", "MinimalERC20.sol", "MinimalERC20.json"
-)
+_ARTIFACT_PATH = os.path.abspath(os.path.join(
+    os.path.dirname(__file__), "..", "contracts", "out", "MinimalERC20.sol", "MinimalERC20.json"
+))
 
 # Function selectors
 _TRANSFER_SELECTOR = Web3.keccak(text="transfer(address,uint256)")[:4]

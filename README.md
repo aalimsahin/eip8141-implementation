@@ -67,12 +67,17 @@ eip8141-implementation/
 ├── revm-eip8141/     # revm fork with 4 new opcodes (submodule)
 ├── foundry/          # Foundry (anvil) fork with type 0x06 support (submodule)
 ├── ethdilithium/     # ZKNox ETHDilithium post-quantum verifier (submodule)
-└── devnet/           # Demo scripts and E2E tests
-    ├── passkey_examples_test.py      # P256 passkey example suite
-    ├── ecdsa_examples_test.py        # ECDSA example suite
-    ├── dilithium_examples_test.py    # ETHDilithium post-quantum example suite
-    ├── simple_p256_verifier.yul      # P256 verifier (Yul source)
-    └── dilithium_approver.yul        # Dilithium approver (Yul source)
+└── e2e/              # E2E tests, shared utils, and local contracts
+    ├── tests/
+    │   ├── passkey_examples_test.py      # P256 passkey example suite
+    │   ├── ecdsa_examples_test.py        # ECDSA example suite
+    │   └── dilithium_examples_test.py    # ETHDilithium post-quantum example suite
+    ├── utils/
+    │   ├── eip8141_utils.py              # Shared frame-tx helpers/constants
+    │   ├── erc20_helpers.py              # ERC20 deploy/calldata/policy helpers
+    │   └── dilithium_approver.yul        # Dilithium approver (Yul source)
+    └── contracts/
+        └── src/MinimalERC20.sol          # Minimal ERC20 used in Example 2
 ```
 
 ### Submodules
@@ -114,8 +119,8 @@ cargo test -p foundry-primitives
 # Start the anvil fork (from foundry/ directory)
 cargo run -p anvil
 
-# In another terminal, run the E2E demo
-python3 devnet/anvil_demo.py
+# In another terminal, run an E2E suite
+python3 e2e/tests/passkey_examples_test.py
 ```
 
-The demo deploys a verifier contract, sends a frame transaction with a VERIFY frame + SENDER frame, and confirms the storage value is set correctly.
+The suite deploys verifier and target contracts, sends EIP-8141 frame transactions, and validates success/revert, state changes, and gas accounting.

@@ -17,12 +17,18 @@ eip8141-implementation/
 │   ├── src/ZKNOX_ethdilithium.sol                    # Keccak-based Dilithium verifier
 │   ├── src/ZKNOX_PKContract.sol                      # SSTORE2-backed PK storage
 │   └── pythonref/dilithium_py/                       # Python signing library
-└── devnet/
-    ├── passkey_examples_test.py      # P256 passkey E2E test suite
-    ├── ecdsa_examples_test.py        # ECDSA E2E test suite
-    ├── dilithium_examples_test.py    # ETHDilithium post-quantum E2E test suite
-    ├── simple_p256_verifier.yul      # P256 verifier (Yul source)
-    └── dilithium_approver.yul        # Dilithium approver (Yul source)
+└── e2e/
+    ├── tests/
+    │   ├── passkey_examples_test.py      # P256 passkey E2E test suite
+    │   ├── ecdsa_examples_test.py        # ECDSA E2E test suite
+    │   └── dilithium_examples_test.py    # ETHDilithium post-quantum E2E test suite
+    ├── utils/
+    │   ├── eip8141_utils.py              # Shared frame-tx utilities
+    │   ├── erc20_helpers.py              # ERC20 helper/policy utilities
+    │   ├── simple_p256_verifier.yul      # P256 verifier (Yul source)
+    │   └── dilithium_approver.yul        # Dilithium approver (Yul source)
+    └── contracts/
+        └── src/MinimalERC20.sol          # Example 2 token contract
 ```
 
 ## Build & Test
@@ -34,8 +40,8 @@ cd foundry && cargo build -p anvil
 # Run transaction type unit tests (39 tests)
 cargo test -p foundry-primitives
 
-# Run E2E demo (start anvil in another terminal first)
-cd .. && python3 devnet/anvil_demo.py
+# Run E2E suites (start anvil in another terminal first)
+cd .. && python3 e2e/tests/passkey_examples_test.py
 ```
 
 ## Working with Submodules
