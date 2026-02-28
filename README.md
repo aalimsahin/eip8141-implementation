@@ -66,10 +66,13 @@ Each frame runs via `MainnetHandler::execution()`, which returns a `FrameResult`
 eip8141-implementation/
 ├── revm-eip8141/     # revm fork with 4 new opcodes (submodule)
 ├── foundry/          # Foundry (anvil) fork with type 0x06 support (submodule)
-└── devnet/           # Demo scripts
-    ├── anvil_demo.py             # E2E demo: deploy verifier + send frame tx
-    ├── passkey_demo.py           # P256 passkey verification demo
-    └── simple_p256_verifier.yul  # Hand-assembled P256 verifier
+├── ethdilithium/     # ZKNox ETHDilithium post-quantum verifier (submodule)
+└── devnet/           # Demo scripts and E2E tests
+    ├── passkey_examples_test.py      # P256 passkey example suite
+    ├── ecdsa_examples_test.py        # ECDSA example suite
+    ├── dilithium_examples_test.py    # ETHDilithium post-quantum example suite
+    ├── simple_p256_verifier.yul      # P256 verifier (Yul source)
+    └── dilithium_approver.yul        # Dilithium approver (Yul source)
 ```
 
 ### Submodules
@@ -78,6 +81,17 @@ eip8141-implementation/
 |------|-------------|
 | [revm-eip8141](https://github.com/aalimsahin/revm-eip8141) | Fork of revm v34.0.0 — `FrameTxContext`, `FrameTxHost` trait, opcode implementations, `with_eip8141_opcodes()` extension |
 | [foundry-eip8141](https://github.com/aalimsahin/foundry-eip8141) | Fork of Foundry — `TxEip8141` type (RLP, EIP-2718, validation), frame execution engine, executor integration |
+| [ETHDILITHIUM](https://github.com/ZKNoxHQ/ETHDILITHIUM) | ZKNox's Ethereum-compatible CRYSTALS-Dilithium (ML-DSA) post-quantum signature verifier |
+
+## Supported Signature Schemes
+
+EIP-8141 VERIFY frames are scheme-agnostic. This repo demonstrates three:
+
+| Scheme | Verifier | Sig Size | Gas | Quantum-Safe |
+|--------|----------|----------|-----|:------------:|
+| **ECDSA** (secp256k1) | ecrecover precompile | 96 B | ~10k | No |
+| **P256** (secp256r1/passkey) | P256VERIFY precompile | 64 B | ~50k | No |
+| **ETHDilithium** (ML-DSA-44) | ZKNOX_ethdilithium | 2420 B | ~5M | Yes |
 
 ## Building
 

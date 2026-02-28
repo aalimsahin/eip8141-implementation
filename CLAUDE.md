@@ -13,10 +13,16 @@ eip8141-implementation/
 │   ├── crates/primitives/src/transaction/eip8141.rs  # TxEip8141 type + validation
 │   ├── crates/anvil/src/eth/backend/eip8141.rs       # Frame execution engine
 │   └── crates/anvil/src/eth/backend/executor.rs      # Detection + dispatch
+├── ethdilithium/       # ZKNox ETHDilithium post-quantum verifier (submodule)
+│   ├── src/ZKNOX_ethdilithium.sol                    # Keccak-based Dilithium verifier
+│   ├── src/ZKNOX_PKContract.sol                      # SSTORE2-backed PK storage
+│   └── pythonref/dilithium_py/                       # Python signing library
 └── devnet/
-    ├── anvil_demo.py               # E2E demo
-    ├── passkey_demo.py             # P256 passkey demo
-    └── simple_p256_verifier.yul    # P256 verifier in Yul
+    ├── passkey_examples_test.py      # P256 passkey E2E test suite
+    ├── ecdsa_examples_test.py        # ECDSA E2E test suite
+    ├── dilithium_examples_test.py    # ETHDilithium post-quantum E2E test suite
+    ├── simple_p256_verifier.yul      # P256 verifier (Yul source)
+    └── dilithium_approver.yul        # Dilithium approver (Yul source)
 ```
 
 ## Build & Test
