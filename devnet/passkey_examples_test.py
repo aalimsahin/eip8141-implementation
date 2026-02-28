@@ -5,12 +5,8 @@ Passkey Example Suite for EIP-8141 (Type 0x06)
 This script validates the EIP-8141 examples with passkey-based signing:
 1. Example 1: Simple transaction (VERIFY + SENDER)
 2. Example 1a: Simple ETH transfer via sender smart-account self-call
-3. Example 1b: Account-deployment-style flow in one tx (VERIFY + DEFAULT + SENDER)
+3. Example 1b: Account-deployment-style flow in one tx (DEFAULT + VERIFY + SENDER)
 4. Example 2: Sponsored-style multi-frame flow (VERIFY/VERIFY/SENDER/SENDER/DEFAULT)
-
-Important implementation note:
-- Current implementation enforces VERIFY before DEFAULT/SENDER in validation.
-  Therefore Example 1b is executed in VERIFY -> DEFAULT -> SENDER order.
 
 Requirements:
     pip install web3 rlp cryptography
@@ -196,6 +192,11 @@ def assert_sender_cost(w3, receipt, bal_before: int, bal_after: int, label: str,
     )
 
 
+def set_balance(w3, address: str, amount_wei: int):
+    resp = w3.provider.make_request("anvil_setBalance", [address, hex(amount_wei)])
+    expect("error" not in resp, f"anvil_setBalance failed for {address}: {resp.get('error')}")
+
+
 def send_signed_frame_tx(
     w3,
     chain_id: int,
@@ -208,12 +209,13 @@ def send_signed_frame_tx(
     sender_bytes = bytes.fromhex(sender_addr[2:])
     frames_copy = [[m, t, g, d] for (m, t, g, d) in frames]
 
-    # Sign hash with VERIFY data zeroed and place r||s in first VERIFY frame.
+    # Sign hash with VERIFY data zeroed and place r||s in the first VERIFY frame.
     expect(frames_copy, f"{label}: empty frame list")
-    expect(frames_copy[0][0] == FRAME_MODE_VERIFY, f"{label}: first frame must be VERIFY")
+    verify_index = next((idx for idx, f in enumerate(frames_copy) if f[0] == FRAME_MODE_VERIFY), None)
+    expect(verify_index is not None, f"{label}: at least one VERIFY frame is required")
     sig_hash = compute_signature_hash(chain_id, nonce, sender_bytes, frames_copy)
     r, s = sign_p256(private_key, sig_hash)
-    frames_copy[0][3] = r + s
+    frames_copy[verify_index][3] = r + s
 
     raw_tx = bytes([TX_TYPE]) + build_tx_rlp(chain_id, nonce, sender_bytes, frames_copy)
     tx_hash = w3.eth.send_raw_transaction(raw_tx)
@@ -352,6 +354,9 @@ def main():
     print(f"Increment target: {increment_target}")
     print()
 
+    # Fund sponsor payer account (scope=0x1 verifier target) directly in Anvil state.
+    set_balance(w3, sponsor_verify, w3.to_wei(5, "ether"))
+
     # Fund passkey sender EOA.
     tx = w3.eth.send_transaction({
         "from": funder,
@@ -412,7 +417,7 @@ def main():
     wallet_before = w3.eth.get_balance(wallet_sender)
     frames = [
         encode_frame(FRAME_MODE_VERIFY, bytes.fromhex(verifier_scope2[2:]), 200_000, b""),
-        encode_frame(FRAME_MODE_SENDER, bytes.fromhex(wallet_sender[2:]), 100_000, b""),
+        encode_frame(FRAME_MODE_SENDER, b"", 100_000, b""),
     ]
     tx_hash, receipt, _ = send_signed_frame_tx(
         w3, chain_id, wallet_sender, private_key, frames, "example1a"
@@ -430,8 +435,8 @@ def main():
     )
     print()
 
-    # ── Example 1b: Deployment-style flow (implementation-compatible order) ─
-    print("Example 1b: Deployment-style flow (VERIFY -> DEFAULT -> SENDER)")
+    # ── Example 1b: Deployment-style flow (EIP order) ───────────────────────
+    print("Example 1b: Deployment-style flow (DEFAULT -> VERIFY -> SENDER)")
     # Child contract runtime sets slot0=0x44 when called.
     child_init = mk_init_code(sstore_runtime(0x44))
     factory = deploy_contract(w3, funder, build_fixed_factory_init_code(child_init))
@@ -441,8 +446,8 @@ def main():
 
     bal_before = w3.eth.get_balance(sender_eoa)
     frames = [
-        encode_frame(FRAME_MODE_VERIFY, bytes.fromhex(verifier_scope2[2:]), 200_000, b""),
         encode_frame(FRAME_MODE_DEFAULT, bytes.fromhex(factory[2:]), 250_000, b""),
+        encode_frame(FRAME_MODE_VERIFY, bytes.fromhex(verifier_scope2[2:]), 200_000, b""),
         encode_frame(FRAME_MODE_SENDER, bytes.fromhex(child_predicted[2:]), 120_000, b""),
     ]
     tx_hash, receipt, _ = send_signed_frame_tx(
@@ -460,7 +465,8 @@ def main():
 
     # ── Example 2: Sponsored-style multi-frame transaction ───────────────
     print("Example 2: Sponsored-style multi-frame flow")
-    bal_before = w3.eth.get_balance(sender_eoa)
+    sender_before = w3.eth.get_balance(sender_eoa)
+    sponsor_before = w3.eth.get_balance(sponsor_verify)
     increment_before = int.from_bytes(w3.eth.get_storage_at(increment_target, 0), "big")
     expect(increment_before == 0, f"example2: increment target initial slot should be 0, got {increment_before}")
     frames = [
@@ -482,7 +488,8 @@ def main():
     tx_hash, receipt, _ = send_signed_frame_tx(
         w3, chain_id, sender_eoa, private_key, frames, "example2"
     )
-    bal_after = w3.eth.get_balance(sender_eoa)
+    sender_after = w3.eth.get_balance(sender_eoa)
+    sponsor_after = w3.eth.get_balance(sponsor_verify)
     expect(int(receipt["status"]) == 1, "example2: expected status=1")
 
     fee_slot = int.from_bytes(w3.eth.get_storage_at(fee_target, 0), "big")
@@ -496,7 +503,11 @@ def main():
         increment_slot == 3,
         f"example2: increment target expected slot0=3 after 3 frames, got {increment_slot}",
     )
-    assert_sender_cost(w3, receipt, bal_before, bal_after, "example2")
+    expect(
+        sender_after == sender_before,
+        f"example2: sender should not pay gas when sponsored, before={sender_before}, after={sender_after}",
+    )
+    assert_sender_cost(w3, receipt, sponsor_before, sponsor_after, "example2-payer")
     print(
         f"  PASS tx={tx_hash.hex()} slots fee/call/post/inc={fee_slot:#x}/{call_slot:#x}/{postop_slot:#x}/{increment_slot:#x}"
     )

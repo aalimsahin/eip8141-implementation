@@ -11,10 +11,10 @@ A frame transaction contains an ordered list of **frames**, each targeting a con
 | Mode | Caller | Purpose |
 |------|--------|---------|
 | **VERIFY** | `ENTRY_POINT` | Runs a verifier contract that must call the `APPROVE` opcode to authorize the sender |
-| **DEFAULT** | `ENTRY_POINT` | General-purpose execution after the sender is approved |
+| **DEFAULT** | `ENTRY_POINT` | General-purpose execution |
 | **SENDER** | `tx.sender` | Execution with the sender's own identity after approval |
 
-VERIFY frames always run first. If the verifier doesn't call `APPROVE`, the entire transaction reverts. Once approved, DEFAULT and SENDER frames execute in order.
+VERIFY frames can appear anywhere in the frame sequence. If a VERIFY frame doesn't call `APPROVE`, the entire transaction reverts. SENDER frames require prior sender approval.
 
 ### New Opcodes
 
@@ -22,7 +22,7 @@ Four new EVM opcodes power frame transactions:
 
 | Opcode | Byte | Description |
 |--------|------|-------------|
-| **APPROVE** | `0xAA` | Sets `sender_approved = true` — how a verifier says "this sender is legitimate" |
+| **APPROVE** | `0xAA` | Scope-based approval: `0x0` sender, `0x1` payment (`payer = frame.target`), `0x2` combined (`payer = sender`) |
 | **TXPARAMLOAD** | `0xB0` | Loads frame tx parameters (sender, nonce, fees, frame count, etc.) onto the stack |
 | **TXPARAMSIZE** | `0xB1` | Returns the byte size of a frame's calldata |
 | **TXPARAMCOPY** | `0xB2` | Copies frame calldata into memory |
@@ -43,18 +43,18 @@ The sender is explicit — no signature recovery needed. The `signature_hash()` 
 ```
 1. Build FrameTxContext from the transaction
 2. Construct a separate EVM with EIP-8141 opcodes enabled
-3. Validate nonce and balance
-4. Deduct max_cost from sender, increment nonce
-5. Take an accounting checkpoint
+3. Validate sender nonce
+4. Take an accounting checkpoint
 
-6. For each frame:
+5. For each frame:
    ├── VERIFY: checkpoint → execute → save approval flags → revert state → check APPROVE
    └── DEFAULT/SENDER: execute → collect logs
 
-7. If any frame failed:
-   └── Revert to accounting checkpoint (undo all frame state, keep nonce + balance)
+6. If any frame failed:
+   └── Revert to accounting checkpoint (undo all frame state changes)
 
-8. Refund unused gas to sender
+7. Compute actual cost from effective_gas_price * gas_used
+8. Charge approved payer (if any) and bump sender nonce
 9. Single finalize() + commit() — one atomic DB write
 ```
 
