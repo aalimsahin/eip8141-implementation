@@ -318,20 +318,8 @@ def send_signed_frame_tx(w3, chain_id, sender_addr, sk, frames, label,
 
 # ─── Main ──────────────────────────────────────────────────────────────────
 
-def main():
-    w3 = Web3(Web3.HTTPProvider(RPC_URL))
-    if not w3.is_connected():
-        print(f"ERROR: Cannot connect to {RPC_URL}")
-        print("Start anvil first: cd foundry && cargo run -p anvil -- --chain-id 8141")
-        sys.exit(1)
-
-    chain_id = w3.eth.chain_id
-    funder = w3.eth.accounts[0]
-    recipient = w3.eth.accounts[1]
-    print(f"Connected to chain ID {chain_id}")
-    print(f"Funder: {funder}")
-    print(f"Recipient: {recipient}")
-    print()
+def run_all_examples(w3, chain_id, funder, recipient):
+    """Core test logic — callable from pytest or standalone."""
 
     # ── Generate Dilithium keypair ──────────────────────────────────────
     print("Generating ETH-Dilithium keypair...")
@@ -464,10 +452,39 @@ def main():
     replay_failed = False
     try:
         w3.eth.send_raw_transaction(raw)
-    except Exception:
+    except Exception as e:
+        err_msg = str(e).lower()
+        expect(
+            "nonce" in err_msg or "already known" in err_msg,
+            f"example1: replay rejected with unexpected error: {e}",
+        )
         replay_failed = True
     expect(replay_failed, "example1: replay should be rejected")
     print("  PASS replay rejected")
+
+    # Wrong-key negative test
+    print("  Wrong-key negative test")
+    _, wrong_sk, _ = generate_dilithium_keypair()
+    frames_wk = [
+        encode_frame(FRAME_MODE_VERIFY, bytes.fromhex(approver_scope2[2:]), verify_gas_limit, b""),
+        encode_frame(FRAME_MODE_SENDER, bytes.fromhex(target_ex1[2:]), 100_000, b""),
+    ]
+    wrong_key_rejected = False
+    try:
+        _, wk_receipt, _ = send_signed_frame_tx(
+            w3, chain_id, sender_eoa, wrong_sk, frames_wk, "wrong-key"
+        )
+        wrong_key_rejected = int(wk_receipt["status"]) == 0
+    except Exception as e:
+        err_msg = str(e).lower()
+        expect(
+            "revert" in err_msg or "verification" in err_msg or "approve" in err_msg
+            or "execution reverted" in err_msg or "payer not approved" in err_msg,
+            f"wrong-key: rejected with unexpected error: {e}",
+        )
+        wrong_key_rejected = True
+    expect(wrong_key_rejected, "wrong-key: tx with wrong signing key should fail")
+    print("  PASS wrong key rejected")
     print()
 
     # ════════════════════════════════════════════════════════════════════
@@ -638,6 +655,20 @@ def main():
     print()
 
     print("All EIP-8141 Dilithium example checks passed.")
+
+
+def test_dilithium_examples(w3, chain_id, funder, recipient):
+    """Pytest entry point — uses fixtures from conftest.py."""
+    run_all_examples(w3, chain_id, funder, recipient)
+
+
+def main():
+    w3 = Web3(Web3.HTTPProvider(RPC_URL))
+    if not w3.is_connected():
+        print(f"ERROR: Cannot connect to {RPC_URL}")
+        print("Start anvil first: cd foundry && cargo run -p anvil -- --chain-id 8141")
+        sys.exit(1)
+    run_all_examples(w3, w3.eth.chain_id, w3.eth.accounts[0], w3.eth.accounts[1])
 
 
 if __name__ == "__main__":

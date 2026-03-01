@@ -44,17 +44,35 @@ def normalize_receipt_type(raw_type) -> int:
 
 
 def mk_init_code(runtime: bytes) -> bytes:
-    # Minimal constructor that returns runtime as deployed code.
-    expect(len(runtime) <= 0xFF, f"runtime too large for PUSH1-sized constructor ({len(runtime)} bytes)")
-    constructor = bytes([
-        0x60, len(runtime),  # PUSH1 runtime_size
-        0x80,                # DUP1
-        0x60, 0x0B,          # PUSH1 constructor_size
-        0x60, 0x00,          # PUSH1 dst
-        0x39,                # CODECOPY
-        0x60, 0x00,          # PUSH1 dst
-        0xF3,                # RETURN
-    ])
+    """Minimal constructor that returns runtime as deployed code.
+
+    Supports PUSH1 (up to 255 bytes) and PUSH2 (up to 65535 bytes) variants.
+    """
+    size = len(runtime)
+    if size <= 0xFF:
+        # PUSH1 variant (11-byte constructor)
+        constructor = bytes([
+            0x60, size,      # PUSH1 runtime_size
+            0x80,            # DUP1
+            0x60, 0x0B,      # PUSH1 constructor_size (11)
+            0x60, 0x00,      # PUSH1 dst
+            0x39,            # CODECOPY
+            0x60, 0x00,      # PUSH1 dst
+            0xF3,            # RETURN
+        ])
+    elif size <= 0xFFFF:
+        # PUSH2 variant (12-byte constructor)
+        constructor = bytes([
+            0x61, (size >> 8) & 0xFF, size & 0xFF,  # PUSH2 runtime_size
+            0x80,            # DUP1
+            0x60, 0x0C,      # PUSH1 constructor_size (12)
+            0x60, 0x00,      # PUSH1 dst
+            0x39,            # CODECOPY
+            0x60, 0x00,      # PUSH1 dst
+            0xF3,            # RETURN
+        ])
+    else:
+        raise ValueError(f"runtime too large for PUSH2 constructor ({size} bytes)")
     return constructor + runtime
 
 

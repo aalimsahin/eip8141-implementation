@@ -60,20 +60,23 @@ from eip8141_utils import (
 )
 
 
-# P256 verifier constructor/runtime (same pattern as passkey_demo.py)
+# P256 verifier constructor/runtime.
+# Compiled from e2e/utils/simple_p256_verifier.yul — includes calldatasize guard.
+# Runtime is 0x4B bytes (75 bytes); constructor deploys runtime + 64-byte pubkey.
 RUNTIME_HEX_BASE = (
-    "38604090036040606039"
-    "60006008b0600052"
-    "600035602052"
-    "602035604052"
-    "602060a060a06000"
-    "6101005afa"
-    "15603d57"
-    "60a05115603d57"
-    "600060006000aa"
-    "5b60006000fd"
+    "3860409003604090606039"  # codecopy pubkey from end of deployed code
+    "60006008b0600052"        # sigHash = TXPARAMLOAD(0x08, 0); MSTORE(0x00)
+    "36604010604557"          # if calldatasize() < 64: jump to revert
+    "600035602052"            # r = calldataload(0x00); MSTORE(0x20, r)
+    "602035604052"            # s = calldataload(0x20); MSTORE(0x40, s)
+    "602060a060a06000"        # STATICCALL args (retSize, retOff, argSize, argOff)
+    "6101005afa"              # STATICCALL(gas, 0x0100, 0, 0xA0, 0xA0, 0x20)
+    "15604557"                # if !success: jump to revert
+    "60a05115604557"          # if mload(0xA0) == 0: jump to revert
+    "600060006000aa"          # APPROVE(scope=0, offset=0, len=0)
+    "5b60006000fd"            # JUMPDEST; REVERT
 )
-CONSTRUCTOR_HEX = "604380601660003938604090036040913960836000f3"
+CONSTRUCTOR_HEX = "604b806016600039386040900360409139608b6000f3"
 
 
 # ─── Crypto-specific Helpers ───────────────────────────────────────────────
@@ -131,20 +134,8 @@ def send_signed_frame_tx(
     return tx_hash, receipt, raw_tx
 
 
-def main():
-    w3 = Web3(Web3.HTTPProvider(RPC_URL))
-    if not w3.is_connected():
-        print(f"ERROR: Cannot connect to {RPC_URL}")
-        print("Start anvil first: cd foundry && cargo run -p anvil -- --chain-id 8141")
-        sys.exit(1)
-
-    chain_id = w3.eth.chain_id
-    funder = w3.eth.accounts[0]
-    recipient = w3.eth.accounts[1]
-    print(f"Connected to chain ID {chain_id}")
-    print(f"Funder: {funder}")
-    print(f"Recipient: {recipient}")
-    print()
+def run_all_examples(w3, chain_id, funder, recipient):
+    """Core test logic — callable from pytest or standalone."""
 
     # Passkey keypair + passkey-EOA sender.
     private_key = ec.generate_private_key(ec.SECP256R1())
@@ -215,10 +206,39 @@ def main():
     replay_failed = False
     try:
         w3.eth.send_raw_transaction(raw)
-    except Exception:
+    except Exception as e:
+        err_msg = str(e).lower()
+        expect(
+            "nonce" in err_msg or "already known" in err_msg,
+            f"example1: replay rejected with unexpected error: {e}",
+        )
         replay_failed = True
     expect(replay_failed, "example1: replay should be rejected")
     print("  PASS replay rejected")
+
+    # Wrong-key negative test
+    print("  Wrong-key negative test")
+    wrong_key = ec.generate_private_key(ec.SECP256R1())
+    frames_wk = [
+        encode_frame(FRAME_MODE_VERIFY, bytes.fromhex(verifier_scope2[2:]), 200_000, b""),
+        encode_frame(FRAME_MODE_SENDER, bytes.fromhex(target_ex1[2:]), 100_000, b""),
+    ]
+    wrong_key_rejected = False
+    try:
+        _, wk_receipt, _ = send_signed_frame_tx(
+            w3, chain_id, sender_eoa, wrong_key, frames_wk, "wrong-key"
+        )
+        wrong_key_rejected = int(wk_receipt["status"]) == 0
+    except Exception as e:
+        err_msg = str(e).lower()
+        expect(
+            "revert" in err_msg or "verification" in err_msg or "approve" in err_msg
+            or "execution reverted" in err_msg or "payer not approved" in err_msg,
+            f"wrong-key: rejected with unexpected error: {e}",
+        )
+        wrong_key_rejected = True
+    expect(wrong_key_rejected, "wrong-key: tx with wrong signing key should fail")
+    print("  PASS wrong key rejected")
     print()
 
     # ── Example 1a: Simple ETH transfer ──────────────────────────────────
@@ -387,6 +407,20 @@ def main():
     print()
 
     print("All EIP-8141 passkey example checks passed.")
+
+
+def test_passkey_examples(w3, chain_id, funder, recipient):
+    """Pytest entry point — uses fixtures from conftest.py."""
+    run_all_examples(w3, chain_id, funder, recipient)
+
+
+def main():
+    w3 = Web3(Web3.HTTPProvider(RPC_URL))
+    if not w3.is_connected():
+        print(f"ERROR: Cannot connect to {RPC_URL}")
+        print("Start anvil first: cd foundry && cargo run -p anvil -- --chain-id 8141")
+        sys.exit(1)
+    run_all_examples(w3, w3.eth.chain_id, w3.eth.accounts[0], w3.eth.accounts[1])
 
 
 if __name__ == "__main__":
