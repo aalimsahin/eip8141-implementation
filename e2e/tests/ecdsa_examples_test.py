@@ -268,14 +268,16 @@ def run_all_examples(w3, chain_id, funder, recipient):
             w3, chain_id, sender_eoa, wrong_signer, frames_wk, "wrong-key"
         )
         wrong_key_rejected = int(wk_receipt["status"]) == 0
-    except Exception as e:
+    except ValueError as e:
         err_msg = str(e).lower()
         expect(
-            "revert" in err_msg or "verification" in err_msg or "approve" in err_msg
-            or "execution reverted" in err_msg or "payer not approved" in err_msg,
+            "revert" in err_msg or "execution reverted" in err_msg
+            or "payer not approved" in err_msg,
             f"wrong-key: rejected with unexpected error: {e}",
         )
         wrong_key_rejected = True
+    except Exception as e:
+        raise AssertionError(f"wrong-key: unexpected non-RPC error: {e}") from e
     expect(wrong_key_rejected, "wrong-key: tx with wrong signing key should fail")
     print("  PASS wrong key rejected")
     print()

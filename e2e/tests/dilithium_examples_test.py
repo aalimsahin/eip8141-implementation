@@ -424,8 +424,10 @@ def run_all_examples(w3, chain_id, funder, recipient):
         print(f"  Estimated verify gas: {gas_estimate}")
         verify_gas_limit = int(gas_estimate * 1.2)  # 20% margin
     except Exception as e:
-        print(f"  Gas estimation failed ({e}), using default 8M")
-        verify_gas_limit = 8_000_000
+        raise AssertionError(
+            f"Gas estimation for Dilithium VERIFY failed — this likely indicates "
+            f"a contract deployment or ABI issue: {e}"
+        ) from e
     print(f"  VERIFY frame gas limit: {verify_gas_limit}")
     print()
 
@@ -475,14 +477,16 @@ def run_all_examples(w3, chain_id, funder, recipient):
             w3, chain_id, sender_eoa, wrong_sk, frames_wk, "wrong-key"
         )
         wrong_key_rejected = int(wk_receipt["status"]) == 0
-    except Exception as e:
+    except ValueError as e:
         err_msg = str(e).lower()
         expect(
-            "revert" in err_msg or "verification" in err_msg or "approve" in err_msg
-            or "execution reverted" in err_msg or "payer not approved" in err_msg,
+            "revert" in err_msg or "execution reverted" in err_msg
+            or "payer not approved" in err_msg,
             f"wrong-key: rejected with unexpected error: {e}",
         )
         wrong_key_rejected = True
+    except Exception as e:
+        raise AssertionError(f"wrong-key: unexpected non-RPC error: {e}") from e
     expect(wrong_key_rejected, "wrong-key: tx with wrong signing key should fail")
     print("  PASS wrong key rejected")
     print()
