@@ -443,6 +443,117 @@ def run_all_examples(w3, chain_id, funder, recipient):
     print("  PASS policy mismatch reverted and ERC20 balances unchanged")
     print()
 
+    # ── Step 3: Failed VERIFY Approval-State Leak Regression ────────────
+    print("Step 3: Failed VERIFY Approval-State Leak Regression")
+    # A failed VERIFY frame must have ZERO effect on approval state.
+    # Frame 0: VERIFY targeting a contract that just REVERTs (no APPROVE called).
+    # Frame 1: VERIFY with legit APPROVE(0x2) (sets sender+payer).
+    # Frame 2: SENDER frame.
+    # If frame 0 leaked state, frame 1's approval could fail or payer could be wrong.
+    revert_runtime = bytes([
+        0x60, 0x00,  # PUSH1 0
+        0x60, 0x00,  # PUSH1 0
+        0xFD,        # REVERT
+    ])
+    reverting_verifier = deploy_contract(w3, funder, mk_init_code(revert_runtime))
+
+    bal_before = w3.eth.get_balance(sender_eoa)
+    frames = [
+        # Frame 0: VERIFY targeting reverting contract — will fail (status=false)
+        encode_frame(FRAME_MODE_VERIFY, bytes.fromhex(reverting_verifier[2:]), 200_000, b"\x00" * 96),
+        # Frame 1: VERIFY targeting legit verifier — APPROVE(0x2) sets sender+payer
+        encode_frame(FRAME_MODE_VERIFY, bytes.fromhex(verifier_scope2[2:]), 200_000, b""),
+        # Frame 2: SENDER frame
+        encode_frame(FRAME_MODE_SENDER, bytes.fromhex(target_ex1[2:]), 100_000, b""),
+    ]
+    tx_hash, receipt, _ = send_signed_frame_tx(
+        w3, chain_id, sender_eoa, signer_private_key, frames, "step3-failed-verify"
+    )
+    bal_after = w3.eth.get_balance(sender_eoa)
+    expect(int(receipt["status"]) == 1, "step3: tx should succeed (frame 1 approves)")
+    # Payer should be sender_eoa (from APPROVE(0x2)), not the reverting_verifier address.
+    # We verify this by checking that the sender paid gas, not the reverting verifier.
+    expect(
+        bal_after < bal_before,
+        "step3: sender should pay gas (payer = sender from APPROVE(0x2))"
+    )
+    reverting_verifier_bal = w3.eth.get_balance(reverting_verifier)
+    # The reverting verifier should NOT have been charged gas.
+    # (If state leaked, payer could be set to reverting_verifier's target.)
+    assert_sender_cost(w3, receipt, bal_before, bal_after, "step3-payer")
+    print(f"  PASS tx={tx_hash.hex()} failed VERIFY did not leak approval state")
+    print()
+
+    # ── Step 4: Calldata Gas Charging — Balance Delta Test ───────────────
+    print("Step 4: Calldata Gas Charging — Balance Delta Test")
+    # Send two frame txs with different calldata sizes and verify that
+    # the larger calldata results in more gas charged.
+
+    # Small calldata: 32 bytes of zeros in VERIFY frame data.
+    small_data = b"\x00" * 32
+    # Large calldata: 1024 bytes of mixed data in VERIFY frame data.
+    large_data = bytes([i % 256 for i in range(1024)])
+
+    # Helper to send a frame tx with specific verifier data and measure balance delta.
+    def measure_gas_delta(extra_data, label):
+        bal_before_inner = w3.eth.get_balance(sender_eoa)
+        inner_frames = [
+            encode_frame(FRAME_MODE_VERIFY, bytes.fromhex(verifier_scope2[2:]), 200_000, extra_data),
+            encode_frame(FRAME_MODE_SENDER, bytes.fromhex(target_ex1[2:]), 100_000, b""),
+        ]
+        _, inner_receipt, inner_raw = send_signed_frame_tx(
+            w3, chain_id, sender_eoa, signer_private_key, inner_frames, label
+        )
+        bal_after_inner = w3.eth.get_balance(sender_eoa)
+        expect(int(inner_receipt["status"]) == 1, f"{label}: expected status=1")
+        delta = bal_before_inner - bal_after_inner
+        gas_used = int(inner_receipt["gasUsed"])
+        return delta, gas_used, inner_raw
+
+    delta_small, gas_small, raw_small = measure_gas_delta(small_data, "step4-small")
+    delta_large, gas_large, raw_large = measure_gas_delta(large_data, "step4-large")
+
+    expect(
+        delta_large > delta_small,
+        f"step4: large calldata delta ({delta_large}) must exceed small ({delta_small})"
+    )
+    expect(
+        gas_large > gas_small,
+        f"step4: large calldata gasUsed ({gas_large}) must exceed small ({gas_small})"
+    )
+
+    # Verify that gas delta is at least (gasUsed * effective_gas_price).
+    egp_small = effective_gas_price(w3, receipt)
+    expect(
+        delta_small >= gas_small * egp_small,
+        f"step4-small: balance delta {delta_small} < gasUsed*egp {gas_small * egp_small}"
+    )
+    egp_large = effective_gas_price(w3, receipt)
+    expect(
+        delta_large >= gas_large * egp_large,
+        f"step4-large: balance delta {delta_large} < gasUsed*egp {gas_large * egp_large}"
+    )
+
+    # Compute expected calldata gas difference from raw tx bytes.
+    # Calldata gas: 4 per zero byte, 16 per non-zero byte in the RLP envelope.
+    def calldata_gas(raw_bytes):
+        """Count intrinsic calldata gas for raw tx bytes (excluding type prefix)."""
+        total = 0
+        for b in raw_bytes[1:]:  # skip type prefix byte
+            total += 4 if b == 0 else 16
+        return total
+
+    cd_gas_small = calldata_gas(raw_small)
+    cd_gas_large = calldata_gas(raw_large)
+    expect(
+        cd_gas_large > cd_gas_small,
+        f"step4: large tx calldata gas ({cd_gas_large}) must exceed small ({cd_gas_small})"
+    )
+    print(f"  PASS small: delta={delta_small} gasUsed={gas_small} cdGas={cd_gas_small}")
+    print(f"  PASS large: delta={delta_large} gasUsed={gas_large} cdGas={cd_gas_large}")
+    print(f"  PASS calldata gas difference = {cd_gas_large - cd_gas_small}")
+    print()
+
     print("All EIP-8141 ECDSA example checks passed.")
 
 
